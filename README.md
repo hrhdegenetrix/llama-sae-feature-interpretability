@@ -576,6 +576,15 @@ llama-server -m model.gguf --control-vector-scaled sae_features/my_feature.gguf:
 | Steering config | `.json` | Cluster name → steering scale mapping |
 | Control vector | `.gguf` | llama.cpp-compatible control vector (one feature direction per layer) |
 
+### Configuring the Server URL
+
+All pipeline scripts default to `http://127.0.0.1:8080`. If your llama-server runs on a different port or host, set the `LLAMA_BASE` environment variable:
+
+```bash
+export LLAMA_BASE="http://127.0.0.1:8090"  # or any host:port
+python3 sae_pipeline/sae_collector.py --layer 20 --rows 500
+```
+
 ### Python Dependencies
 
 ```
