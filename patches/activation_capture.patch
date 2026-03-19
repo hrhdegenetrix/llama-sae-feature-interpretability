@@ -1,0 +1,507 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index dc61afb..5f42766 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1186,6 +1186,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
+     const auto gparams = graph_params(res, ubatch, mctx, gtype);
+ 
++    // Always set eval callback (even on graph reuse) so activation capture works
++    ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
++
+     if (!graph_reuse_disable && res->can_reuse(gparams)) {
+         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
+ 
+@@ -1194,7 +1197,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         res->reset();
+ 
+         ggml_backend_sched_reset(sched.get());
+-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+ 
+         //const auto t_start_us = ggml_time_us();
+ 
+diff --git a/tools/cvector-generator/cvector-generator.cpp b/tools/cvector-generator/cvector-generator.cpp
+index dcce0e9..dbb0290 100644
+--- a/tools/cvector-generator/cvector-generator.cpp
++++ b/tools/cvector-generator/cvector-generator.cpp
+@@ -200,6 +200,14 @@ struct train_context {
+     train_context(int n_embd_, int n_layers_) {
+         n_embd = n_embd_;
+         n_layers = n_layers_;
++        // Defer allocation until we know actual layer count from first eval.
++        // Hybrid architectures (Mamba+attention) may produce fewer l_out tensors
++        // than n_layers, so we wait for concat_diff_tmp to determine the real count.
++    }
++
++    void lazy_init(int actual_layers) {
++        if (ctx_ggml != nullptr) return; // already initialized
++        n_layers = actual_layers;
+         struct ggml_init_params params_ggml = {
+             /*.mem_size   =*/ ggml_tensor_overhead() * (n_layers - 1) * 2u,
+             /*.mem_buffer =*/ NULL,
+@@ -217,6 +225,7 @@ struct train_context {
+ 
+     // add new rows into existing tensor in v_diff_tmp
+     void concat_diff_tmp(const std::vector<struct ggml_tensor *> & diff_filtered) {
++        lazy_init((int) diff_filtered.size() + 1);
+         GGML_ASSERT((int) diff_filtered.size() == n_layers - 1);
+         for (int il = 0; il < n_layers - 1; il++) {
+             auto t = diff_filtered[il];
+diff --git a/tools/server/activation_capture.h b/tools/server/activation_capture.h
+new file mode 100755
+index 0000000..96f2f19
+--- /dev/null
++++ b/tools/server/activation_capture.h
+@@ -0,0 +1,209 @@
++#pragma once
++
++// Activation capture for llama-server feature transparency
++// Hooks into ggml's eval callback to capture l_out tensors during inference
++//
++// Two modes:
++//   1. Live monitoring — stores per-layer mean activations in memory (original)
++//   2. Collection — streams per-token full activation vectors to a binary file for SAE training
++
++#include "ggml.h"
++#include "ggml-backend.h"
++
++#include <mutex>
++#include <vector>
++#include <string>
++#include <cstring>
++#include <cstdio>
++#include <chrono>
++#include <algorithm>
++#include <cmath>
++
++// Binary file format for collected activations:
++//   Header (16 bytes):
++//     magic:      "ACTV" (4 bytes)
++//     version:    uint32_t = 1
++//     n_embd:     uint32_t
++//     layer_idx:  uint32_t
++//   Records (repeated, no delimiter):
++//     float32[n_embd]  — one per token
++//
++// Read with numpy: np.fromfile(f, dtype=np.float32, offset=16).reshape(-1, n_embd)
++
++struct activation_capture {
++    std::mutex mtx;
++    bool enabled = false;
++    int n_layers = 0;
++    int n_embd = 0;
++
++    // --- Live monitoring mode ---
++    // Per-layer mean activations from the most recent decode
++    // layer_means[il] has size n_embd (mean across all tokens in the batch)
++    std::vector<std::vector<float>> layer_means;
++
++    // Timestamp of last capture (milliseconds since epoch)
++    int64_t last_capture_ms = 0;
++
++    // Number of tokens in the last captured batch
++    int last_n_tokens = 0;
++
++    // --- Collection mode (SAE training) ---
++    bool collecting = false;
++    int collect_layer = -1;         // which layer to collect from (-1 = none)
++    FILE * collect_file = nullptr;  // output file handle
++    int64_t collect_n_tokens = 0;   // total tokens written so far
++
++    void init(int layers, int embd) {
++        std::lock_guard<std::mutex> lock(mtx);
++        n_layers = layers;
++        n_embd = embd;
++        layer_means.clear();
++        layer_means.resize(layers);
++    }
++
++    void store_layer_mean(int il, const float * data, int n_embd_actual, int n_tokens) {
++        if (il < 0 || il >= n_layers) return;
++
++        std::vector<float> mean(n_embd_actual, 0.0f);
++
++        // Mean across all tokens for this layer
++        for (int t = 0; t < n_tokens; t++) {
++            for (int j = 0; j < n_embd_actual; j++) {
++                mean[j] += data[t * n_embd_actual + j];
++            }
++        }
++        if (n_tokens > 0) {
++            for (int j = 0; j < n_embd_actual; j++) {
++                mean[j] /= (float)n_tokens;
++            }
++        }
++
++        std::lock_guard<std::mutex> lock(mtx);
++        layer_means[il] = std::move(mean);
++        last_n_tokens = n_tokens;
++
++        auto now = std::chrono::system_clock::now();
++        last_capture_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++            now.time_since_epoch()).count();
++    }
++
++    // Write per-token vectors to the collection file (called from callback)
++    void collect_tokens(int il, const float * data, int n_embd_actual, int n_tokens) {
++        if (il != collect_layer || !collect_file) return;
++
++        // Write raw float32 vectors — one per token, no framing
++        size_t written = fwrite(data, sizeof(float), (size_t)n_embd_actual * n_tokens, collect_file);
++        if (written == (size_t)n_embd_actual * n_tokens) {
++            collect_n_tokens += n_tokens;
++        }
++        // Flush periodically (every ~1000 tokens) to avoid data loss
++        if (collect_n_tokens % 1024 < n_tokens) {
++            fflush(collect_file);
++        }
++    }
++
++    bool start_collection(int layer, const char * path) {
++        std::lock_guard<std::mutex> lock(mtx);
++        if (collecting) return false; // already collecting
++
++        if (layer < 0 || layer >= n_layers) return false;
++
++        FILE * f = fopen(path, "wb");
++        if (!f) return false;
++
++        // Write header
++        const char magic[4] = {'A', 'C', 'T', 'V'};
++        uint32_t version = 1;
++        uint32_t embd = (uint32_t)n_embd;
++        uint32_t lidx = (uint32_t)layer;
++
++        fwrite(magic, 1, 4, f);
++        fwrite(&version, sizeof(uint32_t), 1, f);
++        fwrite(&embd, sizeof(uint32_t), 1, f);
++        fwrite(&lidx, sizeof(uint32_t), 1, f);
++
++        collect_file = f;
++        collect_layer = layer;
++        collect_n_tokens = 0;
++        collecting = true;
++        // Also ensure capture is enabled so callback fires
++        enabled = true;
++
++        return true;
++    }
++
++    bool stop_collection() {
++        std::lock_guard<std::mutex> lock(mtx);
++        if (!collecting) return false;
++
++        if (collect_file) {
++            fflush(collect_file);
++            fclose(collect_file);
++            collect_file = nullptr;
++        }
++        collecting = false;
++        collect_layer = -1;
++        return true;
++    }
++};
++
++// Global instance
++inline activation_capture g_activation_capture;
++
++// The eval callback — called for every tensor node during graph computation
++// When ask==true: return true if we want to observe this tensor (causes GPU->CPU copy)
++// When ask==false: tensor data is available for reading
++static bool activation_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
++    (void)user_data;
++
++    // We care about layer output tensors — named differently by model architecture:
++    //   Standard models (qwen3, qwen2, llama, etc.): "l_out-{layer}"
++    //   Newer architectures (qwen3next, qwen3.5):    "final_output-{layer}"
++    const bool is_target = strncmp(t->name, "l_out", 5) == 0
++                        || strncmp(t->name, "final_output", 12) == 0;
++
++    if (ask) {
++        // When disabled, return false for all tensors — zero overhead
++        if (!g_activation_capture.enabled) {
++            return false;
++        }
++        return is_target; // only request data for l_out tensors
++    }
++
++    // ask == false: tensor data has been copied to CPU for us to read
++    if (!is_target) {
++        return true;
++    }
++
++    // Parse layer index from tensor name: "l_out-0", "l_out-1", etc.
++    int il = -1;
++    const char * dash = strchr(t->name, '-');
++    if (dash) {
++        il = atoi(dash + 1);
++    }
++    if (il < 0) {
++        return true;
++    }
++
++    if (t->type != GGML_TYPE_F32) {
++        return true;
++    }
++
++    // t is [n_embd, n_tokens] — copy data from backend (GPU) to CPU buffer
++    int n_embd   = (int)t->ne[0];
++    int n_tokens = (int)t->ne[1];
++    size_t n_bytes = (size_t)n_embd * n_tokens * sizeof(float);
++
++    std::vector<float> cpu_buf(n_embd * n_tokens);
++    ggml_backend_tensor_get(t, cpu_buf.data(), 0, n_bytes);
++
++    // Always update live monitoring means
++    g_activation_capture.store_layer_mean(il, cpu_buf.data(), n_embd, n_tokens);
++
++    // If collecting, also stream per-token vectors to file
++    if (g_activation_capture.collecting) {
++        g_activation_capture.collect_tokens(il, cpu_buf.data(), n_embd, n_tokens);
++    }
++
++    return true;
++}
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 2e43beb..6827c7f 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,3 +1,4 @@
++#include "activation_capture.h"
+ #include "server-context.h"
+ #include "server-common.h"
+ #include "server-http.h"
+@@ -628,6 +629,10 @@ private:
+ 
+         params_base = params;
+ 
++        // Activation capture: install eval callback before context creation
++        params_base.cb_eval = activation_eval_callback;
++        params_base.cb_eval_user_data = nullptr;
++
+         llama_init = common_init_from_params(params_base);
+ 
+         model = llama_init->model();
+@@ -642,6 +647,14 @@ private:
+ 
+         n_ctx = llama_n_ctx(ctx);
+ 
++        // Activation capture: init struct with model dimensions
++        {
++            int act_n_layers = llama_model_n_layer(model);
++            int act_n_embd   = llama_model_n_embd(model);
++            g_activation_capture.init(act_n_layers, act_n_embd);
++            SRV_INF("activation capture: initialized (%d layers, %d embd)%s\n", act_n_layers, act_n_embd, "");
++        }
++
+         add_bos_token = llama_vocab_get_add_bos(vocab);
+ 
+         if (params_base.speculative.has_dft()) {
+@@ -3996,6 +4009,170 @@ void server_routes::init_routes() {
+         res->ok(result->to_json());
+         return res;
+     };
++
++    // --- Activation capture: GET /activations ---
++    this->get_activations = [](const server_http_req & req) -> server_http_res_ptr {
++        auto res = std::make_unique<server_http_res>();
++        json result;
++
++        std::lock_guard<std::mutex> lock(g_activation_capture.mtx);
++        result["enabled"]          = g_activation_capture.enabled;
++        result["n_layers"]         = g_activation_capture.n_layers;
++        result["n_embd"]           = g_activation_capture.n_embd;
++        result["last_capture_ms"]  = g_activation_capture.last_capture_ms;
++        result["last_n_tokens"]    = g_activation_capture.last_n_tokens;
++        result["collecting"]       = g_activation_capture.collecting;
++        result["collect_layer"]    = g_activation_capture.collect_layer;
++        result["collect_n_tokens"] = g_activation_capture.collect_n_tokens;
++
++        // Parse optional query params
++        std::string layers_param = req.get_param("layers");
++        std::string top_k_param  = req.get_param("top_k");
++        int top_k = top_k_param.empty() ? 0 : std::stoi(top_k_param);
++
++        // Determine which layers to return
++        std::vector<int> requested_layers;
++        if (!layers_param.empty()) {
++            std::stringstream ss(layers_param);
++            std::string item;
++            while (std::getline(ss, item, ',')) {
++                int il = std::stoi(item);
++                if (il >= 0 && il < g_activation_capture.n_layers) {
++                    requested_layers.push_back(il);
++                }
++            }
++        } else {
++            for (int i = 0; i < g_activation_capture.n_layers; i++) {
++                requested_layers.push_back(i);
++            }
++        }
++
++        if (top_k > 0) {
++            // Return only top-K activations by magnitude per layer
++            json layers_obj = json::object();
++            for (int il : requested_layers) {
++                json layer_data;
++                if (il < (int)g_activation_capture.layer_means.size() &&
++                    !g_activation_capture.layer_means[il].empty()) {
++                    const auto & means = g_activation_capture.layer_means[il];
++                    int n = (int)means.size();
++                    std::vector<std::pair<int, float>> indexed(n);
++                    for (int j = 0; j < n; j++) {
++                        indexed[j] = {j, means[j]};
++                    }
++                    std::partial_sort(indexed.begin(),
++                                      indexed.begin() + std::min(top_k, n),
++                                      indexed.end(),
++                                      [](const auto & a, const auto & b) {
++                                          return std::abs(a.second) > std::abs(b.second);
++                                      });
++                    json top_arr = json::array();
++                    for (int j = 0; j < std::min(top_k, n); j++) {
++                        top_arr.push_back({{"idx", indexed[j].first}, {"val", indexed[j].second}});
++                    }
++                    layer_data["top_k"] = top_arr;
++                } else {
++                    layer_data["top_k"] = json::array();
++                }
++                layers_obj[std::to_string(il)] = layer_data;
++            }
++            result["layers"] = layers_obj;
++        } else {
++            // Return full mean vectors
++            json layer_means = json::array();
++            for (int il : requested_layers) {
++                if (il < (int)g_activation_capture.layer_means.size() &&
++                    !g_activation_capture.layer_means[il].empty()) {
++                    layer_means.push_back(g_activation_capture.layer_means[il]);
++                } else {
++                    layer_means.push_back(json::array());
++                }
++            }
++            result["layer_means"] = layer_means;
++        }
++
++        res->data = result.dump();
++        return res;
++    };
++
++    // --- Activation capture: POST /activations ---
++    this->post_activations = [](const server_http_req & req) -> server_http_res_ptr {
++        auto res = std::make_unique<server_http_res>();
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (...) {
++            res->status = 400;
++            res->data = json({{"error", "invalid JSON"}}).dump();
++            return res;
++        }
++
++        bool want_enabled = body.value("enabled", false);
++        {
++            std::lock_guard<std::mutex> lock(g_activation_capture.mtx);
++            g_activation_capture.enabled = want_enabled;
++        }
++
++        json result;
++        result["enabled"]  = want_enabled;
++        result["n_layers"] = g_activation_capture.n_layers;
++        result["n_embd"]   = g_activation_capture.n_embd;
++        res->data = result.dump();
++        return res;
++    };
++
++    // --- Activation capture: POST /activations/collect ---
++    // Start or stop per-token activation collection to a binary file (for SAE training)
++    // Start: {"layer": 17, "path": "/tmp/activations_layer17.bin"}
++    // Stop:  {"stop": true}
++    // Status: {} (empty body)
++    this->post_activations_collect = [](const server_http_req & req) -> server_http_res_ptr {
++        auto res = std::make_unique<server_http_res>();
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (...) {
++            res->status = 400;
++            res->data = json({{"error", "invalid JSON"}}).dump();
++            return res;
++        }
++
++        json result;
++
++        if (body.contains("stop") && body["stop"].get<bool>()) {
++            // Stop collection
++            int64_t tokens_collected = g_activation_capture.collect_n_tokens;
++            bool stopped = g_activation_capture.stop_collection();
++            result["stopped"] = stopped;
++            result["tokens_collected"] = tokens_collected;
++        } else if (body.contains("layer") && body.contains("path")) {
++            // Start collection
++            int layer = body["layer"].get<int>();
++            std::string path = body["path"].get<std::string>();
++            bool started = g_activation_capture.start_collection(layer, path.c_str());
++            if (!started) {
++                res->status = 409;
++                result["error"] = "Collection already active or invalid layer/path";
++                result["collecting"] = g_activation_capture.collecting;
++                result["n_layers"] = g_activation_capture.n_layers;
++                res->data = result.dump();
++                return res;
++            }
++            result["started"] = true;
++            result["layer"] = layer;
++            result["path"] = path;
++            result["n_embd"] = g_activation_capture.n_embd;
++        }
++
++        // Always include status
++        result["collecting"]       = g_activation_capture.collecting;
++        result["collect_layer"]    = g_activation_capture.collect_layer;
++        result["collect_n_tokens"] = g_activation_capture.collect_n_tokens;
++        result["enabled"]          = g_activation_capture.enabled;
++
++        res->data = result.dump();
++        return res;
++    };
+ }
+ 
+ std::unique_ptr<server_res_generator> server_routes::handle_slots_save(const server_http_req & req, int id_slot) {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 75f3d2d..656c852 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "server-http.h"
++#include "activation_capture.h"
+ #include "server-task.h"
+ #include "server-queue.h"
+ 
+@@ -115,6 +116,9 @@ struct server_routes {
+     server_http_context::handler_t post_rerank;
+     server_http_context::handler_t get_lora_adapters;
+     server_http_context::handler_t post_lora_adapters;
++    server_http_context::handler_t get_activations;
++    server_http_context::handler_t post_activations;
++    server_http_context::handler_t post_activations_collect;
+ private:
+     std::unique_ptr<server_res_generator> handle_completions_impl(
+             const server_http_req & req,
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 0bd6fda..bbde6e5 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -199,6 +199,10 @@ int main(int argc, char ** argv) {
+     // LoRA adapters hotswap
+     ctx_http.get ("/lora-adapters",       ex_wrapper(routes.get_lora_adapters));
+     ctx_http.post("/lora-adapters",       ex_wrapper(routes.post_lora_adapters));
++    // Activation capture (feature transparency + SAE collection)
++    ctx_http.get ("/activations",          ex_wrapper(routes.get_activations));
++    ctx_http.post("/activations",          ex_wrapper(routes.post_activations));
++    ctx_http.post("/activations/collect",   ex_wrapper(routes.post_activations_collect));
+     // Save & load slots
+     ctx_http.get ("/slots",               ex_wrapper(routes.get_slots));
+     ctx_http.post("/slots/:id_slot",      ex_wrapper(routes.post_slots));

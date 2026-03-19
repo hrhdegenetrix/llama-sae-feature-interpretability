@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.bin
+*.pt
+*.gguf
+sae_data/
+sae_models/
+*.egg-info/
+dist/
+build/
+.env
