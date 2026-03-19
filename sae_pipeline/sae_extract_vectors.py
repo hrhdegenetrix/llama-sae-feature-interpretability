@@ -55,7 +55,7 @@ import gguf
 
 from sae_trainer import SparseAutoencoder
 
-DEFAULT_OUTPUT_DIR = "llama_configs/cvectors/sae_features"
+DEFAULT_OUTPUT_DIR = "sae_vectors"
 
 
 def extract_feature_direction(model, feature_idx):
@@ -93,7 +93,7 @@ def combine_directions(model, features_and_weights):
     return combined
 
 
-def write_control_vector_gguf(direction, layer, n_layers, output_path, model_hint="qwen3"):
+def write_control_vector_gguf(direction, layer, n_layers, output_path, model_hint=""):
     """Write a direction vector as a llama.cpp-compatible control vector GGUF.
 
     Creates a GGUF with direction tensors for each layer 1..n_layers.
@@ -276,7 +276,7 @@ def main():
     print(f"")
     print(f"  # Add to trait_scales.json for automatic loading:")
     print(f"  Edit your steering config to include \"{args.name}\": -0.3")
-    print(f"  Then symlink or copy the GGUF to the cvectors/output dir")
+    print(f"  Then copy the GGUF to your control vector directory to the cvectors/output dir")
     print(f"")
     print(f"  Scale guide: 0.1-0.3 = subtle, 0.3-0.6 = noticeable, 0.6+ = strong")
     print(f"  Start with small negative scales for suppression to keep output natural")

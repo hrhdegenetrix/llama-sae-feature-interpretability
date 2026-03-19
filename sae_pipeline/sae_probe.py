@@ -27,7 +27,7 @@ Usage:
 
     # Find max-activating examples for a specific feature from a dataset
     python3 sae_probe.py --model sae_models/sae_layer24_16384f_20260305_114446.pt \
-        --feature 5578 --dataset sae_data/activations_layer24_harry_dpo_ready_20rows.bin
+        --feature 5578 --dataset sae_data/activations_layer24_dataset_20rows.bin
 """
 
 import argparse

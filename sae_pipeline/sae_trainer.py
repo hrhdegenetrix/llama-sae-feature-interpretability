@@ -7,9 +7,9 @@ combinations of learned features, enabling fine-grained analysis of model behavi
 
 Usage:
     # Train on a single collection file
-    python3 sae_trainer.py --input sae_data/activations_layer24_harry_dpo_ready_1000rows.bin
+    python3 sae_trainer.py --input sae_data/activations_layer24_dataset_1000rows.bin
 
-    # Train on multiple files (e.g., Harry + sycophancy data combined)
+    # Train on multiple files (e.g., multiple datasets combined)
     python3 sae_trainer.py --input sae_data/activations_layer24_*.bin
 
     # Custom expansion factor and sparsity

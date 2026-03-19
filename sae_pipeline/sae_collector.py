@@ -5,7 +5,7 @@ Feeds conversation data through a running llama-server's completions API while t
 /activations/collect endpoint streams per-token activation vectors to a binary file.
 
 Usage:
-    # Collect from Harry's DPO dataset, layer 24, 1000 rows
+    # Collect from Full chat DPO dataset, layer 24, 1000 rows
     python3 sae_collector.py --layer 24 --rows 1000
 
     # Collect both chosen and rejected responses (for contrastive analysis)
@@ -128,7 +128,7 @@ def format_row_text(row, side="chosen"):
     """Format a dataset row into text for encoding.
 
     Handles two formats:
-    1. Harry's DPO: chosen/rejected are full chat arrays (prompt embedded)
+    1. Full chat DPO: chosen/rejected are full chat arrays (prompt embedded)
     2. Sycophancy/HH: separate 'prompt' string + chosen/rejected with assistant messages
 
     Returns formatted text string, or None if the side is empty.
@@ -150,7 +150,7 @@ def format_row_text(row, side="chosen"):
             parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
         return "\n".join(parts)
     elif isinstance(messages, list) and len(messages) > 0:
-        # Format: full chat array (Harry's DPO style)
+        # Format: full chat array (Full chat DPO style)
         return format_chat_messages(messages)
     elif isinstance(messages, str):
         # Plain text format
