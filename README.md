@@ -2,7 +2,7 @@
 
 **Sparse Autoencoder (SAE) training and behavioral steering via activation capture in llama-server**
 
-By Magdalene Sullivan • [heraldai](https://github.com/hrhdegenetrix) • March 2026
+By Magdalene Sullivan • [heraldai](https://heraldai.org) • March 2026
 
 ---
 
@@ -10,18 +10,18 @@ By Magdalene Sullivan • [heraldai](https://github.com/hrhdegenetrix) • March
 
 This project adds **feature-level interpretability** to llama.cpp. It lets you:
 
-1. **See inside your model** — capture per-layer activation vectors during inference with ~6% overhead
-2. **Discover behavioral features** — train sparse autoencoders (SAEs) on captured activations to decompose model behavior into interpretable features
-3. **Identify specific behaviors** — use behavioral cluster probing to find which features correspond to sycophancy, hedging, creativity, vulnerability, or any pattern you define
-4. **Steer behavior at the feature level** — extract discovered features as GGUF control vectors and apply them at inference time with per-feature scaling
+1. **See inside your model**: capture per-layer activation vectors during inference with ~6% overhead
+2. **Discover behavioral features**: train sparse autoencoders (SAEs) on captured activations to decompose model behavior into interpretable features
+3. **Identify specific behaviors**: use behavioral cluster probing to find which features correspond to sycophancy, hedging, creativity, vulnerability, or any pattern you define
+4. **Steer behavior at the feature level**: extract discovered features as GGUF control vectors and apply them at inference time with per-feature scaling
 
-This is **not** prompt engineering, finetuning, or RLHF. It operates on the model's internal representations directly — you can suppress sycophantic deference or amplify genuine curiosity by scaling individual feature directions during the forward pass.
+This is **not** prompt engineering, finetuning, or RLHF. It operates on the model's internal representations directly: you can suppress sycophantic deference or amplify genuine curiosity by scaling individual feature directions during the forward pass.
 
 The entire pipeline runs locally on consumer hardware (tested on RTX 3090, 24 GB VRAM).
 
 ### What You Need
 
-- A GGUF model running in llama-server (any architecture — tested with Qwen3, Qwen3.5, Qwen3.5-MoE, LLaMA)
+- A GGUF model running in llama-server (any architecture: tested with Qwen3, Qwen3.5, Qwen3.5-MoE, LLaMA)
 - One CUDA GPU with enough VRAM for your model + ~400 MB for SAE training
 - Python 3.10+ with PyTorch, numpy, requests
 - ~30 minutes for the full pipeline (collection through steering)
@@ -32,30 +32,30 @@ The entire pipeline runs locally on consumer hardware (tested on RTX 3090, 24 GB
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    PATCHED llama-server                          │
+│                    PATCHED llama-server                         │
 │                                                                 │
 │  llama_decode() ──► eval callback ──► l_out tensor intercept    │
-│       │                                      │                  │
-│       │              ┌───────────────────────┐│                 │
-│       ▼              │ activation_capture.h  ││                 │
-│  Normal inference    │  • live monitoring    ││                 │
-│  (unaffected)        │  • SAE collection     ││                 │
-│                      └───────────────────────┘│                 │
+│       │                                       │                 │
+│       │            ┌───────────────────────┐  │                 │
+│       ▼            │ activation_capture.h  │  │                 │
+│  Normal inference  │  • live monitoring    │  │                 │
+│  (unaffected)      │  • SAE collection     │  │                 │
+│                    └───────────────────────┘  │                 │
 │                                               ▼                 │
-│  GET  /activations ◄── per-layer mean vectors (top-K or full)  │
-│  POST /activations ◄── enable/disable capture                  │
-│  POST /activations/collect ◄── stream full vectors to .bin     │
+│  GET  /activations ◄── per-layer mean vectors (top-K or full)   │
+│  POST /activations ◄── enable/disable capture                   │
+│  POST /activations/collect ◄── stream full vectors to .bin      │
 └─────────────────────────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    SAE PIPELINE (Python)                         │
+│                    SAE PIPELINE (Python)                        │
 │                                                                 │
 │  1. sae_collector.py  ──► activations_layer20.bin               │
 │  2. sae_trainer.py    ──► sae_layer20_16384f.pt                 │
-│  3. sae_probe.py      ──► "feature 12846 = sycophancy"         │
+│  3. sae_probe.py      ──► "feature 12846 = sycophancy"          │
 │  4. sae_batch_reprobe ──► cluster-to-feature mappings           │
-│  5. sae_extract_vectors ──► sycophancy.gguf, curiosity.gguf    │
+│  5. sae_extract_vectors ──► sycophancy.gguf, curiosity.gguf     │
 │                                                                 │
 │  Load vectors in llama-server:                                  │
 │  --control-vector-scaled sycophancy.gguf:-0.3,curiosity.gguf:0.2│
@@ -70,15 +70,15 @@ The patch adds activation capture to llama-server. It modifies 8 files and adds 
 
 ### What the Patch Does
 
-The patch is 6 files, ~406 lines of changes. Most model architectures already emit `l_out` tensors upstream — the patch adds the server-side infrastructure to capture and expose them.
+The patch is 6 files, ~406 lines of changes. Most model architectures already emit `l_out` tensors upstream: the patch adds the server-side infrastructure to capture and expose them.
 
 | File | Change |
 |------|--------|
-| `tools/server/activation_capture.h` | **NEW** — Core capture struct, eval callback, binary collection I/O (209 lines) |
+| `tools/server/activation_capture.h` | **NEW**: Core capture struct, eval callback, binary collection I/O (209 lines) |
 | `tools/server/server-context.cpp` | Install callback before context creation, init capture struct, add 3 route handler lambdas (+177 lines) |
 | `tools/server/server-context.h` | Declare handler function pointers (+4 lines) |
 | `tools/server/server.cpp` | Register `/activations` GET/POST endpoints (+4 lines) |
-| `src/llama-context.cpp` | Move eval callback registration before graph reuse check — **critical fix** (+3/-1 lines) |
+| `src/llama-context.cpp` | Move eval callback registration before graph reuse check; **critical fix** (+3/-1 lines) |
 | `tools/cvector-generator/cvector-generator.cpp` | Lazy init for hybrid architectures (Mamba+attention) (+9 lines) |
 
 > **Note**: Many model architectures (LLaMA, Qwen3, Qwen3.5, etc.) already have `build_cvec()` and `cb(cur, "l_out", il)` in upstream llama.cpp. If your model's `src/models/{arch}.cpp` does NOT have `l_out` callbacks, add `cur = build_cvec(cur, il); cb(cur, "l_out", il);` after the final residual add in the layer loop.
@@ -106,7 +106,7 @@ cmake --build build --config Release -j $(nproc)
 # Start llama-server with any GGUF model
 ./build/bin/llama-server -m /path/to/model.gguf -c 4096 -ngl 999
 
-# In another terminal — check activation endpoint exists
+# In another terminal: check activation endpoint exists
 curl http://127.0.0.1:8080/activations
 # Should return: {"enabled":false,"n_layers":...,"n_embd":...}
 
@@ -125,9 +125,9 @@ curl "http://127.0.0.1:8080/activations?layers=0,10,20&top_k=5"
 
 ### Patch Details
 
-**The eval callback** (`activation_capture.h`): llama.cpp's scheduler supports an optional callback that fires for every tensor node during graph computation. In the "ask" phase, the callback says which tensors it wants to observe (we request `l_out-*` tensors — layer outputs). In the "deliver" phase, the scheduler has copied the tensor from GPU to CPU, and we compute the mean activation vector across all tokens in the batch.
+**The eval callback** (`activation_capture.h`): llama.cpp's scheduler supports an optional callback that fires for every tensor node during graph computation. In the "ask" phase, the callback says which tensors it wants to observe (we request `l_out-*` tensors--layer outputs). In the "deliver" phase, the scheduler has copied the tensor from GPU to CPU, and we compute the mean activation vector across all tokens in the batch.
 
-**The graph reuse fix** (`llama-context.cpp`): The original code set the eval callback only inside the graph-reuse branch. After the first inference, subsequent passes reuse the graph but skip callback registration — so capture silently stops working. The fix moves callback registration before the reuse check.
+**The graph reuse fix** (`llama-context.cpp`): The original code set the eval callback only inside the graph-reuse branch. After the first inference, subsequent passes reuse the graph but skip callback registration, so capture silently stops working. The fix moves callback registration before the reuse check.
 
 **Why `l_out` tensors**: These are the output of each transformer layer (after attention + FFN + residual connection). They represent the model's evolving representation of the input at each depth level. Control vectors are applied here too, so captured activations reflect the steered state.
 
@@ -141,19 +141,17 @@ Measured on RTX 3090, Qwen3-8B Q4_K_M:
 | Enabled (live monitoring) | ~131.8 tok/s | ~6% |
 | Enabled (collection to disk) | ~128 tok/s | ~9% |
 
-When disabled, the callback returns `false` for all tensors — zero GPU-CPU copies, near-zero overhead. The overhead when enabled comes from ggml switching to per-node computation with sync barriers.
+When disabled, the callback returns `false` for all tensors: zero GPU-CPU copies, near-zero overhead. The overhead when enabled comes from ggml switching to per-node computation with sync barriers.
 
 ---
 
 ## Part 2: Collecting Activations for SAE Training
 
-Live monitoring gives you the mean activation vector from the last inference. For SAE training, you need **per-token full activation vectors** from a large corpus — hundreds of thousands of tokens.
+Live monitoring gives you the mean activation vector from the last inference. For SAE training, you need **per-token full activation vectors** from a large corpus. Ideally, hundreds of thousands of tokens.
 
 ### How Collection Works
 
-The collector script feeds text through llama-server's completions API with `max_tokens=1` (we don't want generated text — only the forward pass activations). The patched callback writes the full activation vector at the target layer for every token to a binary file.
-
-Think of it as an MRI: we scan what lights up inside the model when it reads text, not what it says back.
+The collector script feeds text through llama-server's completions API with `max_tokens=1` (we don't want generated text: only the forward pass activations). The patched callback writes the full activation vector at the target layer for every token to a binary file. In so doing, we are able to create a sort of "MRI" for AI models, with a process that takes at most a couple of hours on an RTX 3090 and a large dataset to train for the first time. Actual impact on inference time for 'in the field' testing is negligible, and the process is adaptable if other model types are preferred for the process of feature interpretation.
 
 ### Preparing Your Dataset
 
@@ -188,7 +186,7 @@ python3 sae_collector.py --info
 | **Mid** | **12–32** | **Behavioral: style, personality, sycophancy, hedging** |
 | Late | 32–48 | Output: format compliance, next-token prediction |
 
-**Start with a layer at ~40-50% depth** (e.g., layer 20 for a 48-layer model). This is the sweet spot for behavioral features.
+**It is recommended to start with a layer at ~40-50% depth** (e.g., layer 20 for a 48-layer model). The middle layers seem to be the point of most subtle influence.
 
 ### Binary File Format
 
@@ -225,7 +223,7 @@ print(f"Loaded {data.shape[0]} tokens × {data.shape[1]} dims from layer {layer_
 
 ## Part 3: Training the SAE
 
-The sparse autoencoder learns to decompose each activation vector into a sparse combination of learned features. "Sparse" means only ~5-10% of features are active for any given token. Each feature direction in the SAE corresponds to a specific pattern the model has learned — potentially an interpretable concept.
+The sparse autoencoder learns to decompose each activation vector into a sparse combination of learned features. "Sparse" means only ~5-10% of features are active for any given token. Each feature direction in the SAE corresponds to a specific pattern the model has learned: potentially, an interpretable concept.
 
 ### Architecture
 
@@ -235,7 +233,7 @@ input (n_embd) → pre_bias subtraction → encoder (ReLU) → sparse features (
 Loss = MSE(reconstruction, input) + l1_coeff × mean(|features|)
 ```
 
-The L1 penalty forces sparsity — the autoencoder must explain each activation using as few features as possible, which pushes features toward monosemantic (single-concept) directions.
+The L1 penalty forces sparsity: the autoencoder must explain each activation using as few features as possible, which pushes features toward monosemantic (single-concept) directions.
 
 ### Running Training
 
@@ -299,7 +297,7 @@ sae_models/sae_layer20_16384f_20260319_143022.json   # Metadata + training stats
 
 ## Part 4: Probing Features
 
-Now comes the fun part — finding out what the features mean.
+Acquiring the features is one thing, but interpreting them is its own process that merits many different approaches. Our suggested methods are below, but custom refinements and applications are strongly encouraged.
 
 ### Single Phrase Probe
 
@@ -327,7 +325,7 @@ python3 sae_probe.py \
     --contrast "I think there's more to consider here."
 ```
 
-This reveals features that fire specifically for one pattern but not the other — the core of behavioral feature discovery.
+This reveals features that fire specifically for one pattern but not the other: the core of behavioral feature discovery.
 
 ### Batch Probe (Finding Shared Features Across a Cluster)
 
@@ -355,7 +353,7 @@ Features that fire on 60%+ of these phrases are strong candidates for the "sycop
 
 ## Part 5: Behavioral Cluster Probing
 
-To go from individual probes to a systematic behavioral map, define **clusters** — groups of phrases that exemplify specific behaviors.
+To go from individual probes to a systematic behavioral map, define **clusters**: groups of phrases that exemplify specific behaviors.
 
 ### Creating Cluster Files
 
@@ -383,7 +381,7 @@ Create as many clusters as you want: `hedging.json`, `curiosity.json`, `creativi
 
 ### Batch Reprobe All Clusters
 
-This is the key step — it probes every cluster, then uses **inter-cluster differential scoring** to find features that are unique to each behavior (not just generically active).
+This is the key step: it probes every cluster, then uses **inter-cluster differential scoring** to find features that are unique to each behavior (not just generically active).
 
 ```bash
 python3 sae_batch_reprobe.py \
@@ -394,7 +392,7 @@ python3 sae_batch_reprobe.py \
     --delay 1.0
 ```
 
-**Why inter-cluster differential?** A feature might fire on both "sycophancy" and "hedging" phrases — it could be a generic politeness feature. Differential scoring finds features that fire significantly more in one cluster than the average of all others.
+**Why inter-cluster differential?** A feature might fire on both "sycophancy" and "hedging" phrases, meaning it could be a generic politeness feature. Differential scoring finds features that fire significantly more in one cluster than the average of all others.
 
 ### Output
 
@@ -522,8 +520,8 @@ A feature is interpretable when:
 
 ### Common Pitfalls
 
-- **Generic features**: Fire on everything — these are general language features, not behavioral. The inter-cluster differential scoring handles this.
-- **Dead features**: Never activate — the L1 coefficient was too aggressive, or the feature wasn't needed. Usually < 5% is fine.
+- **Generic features**: Fire on everything: these are general language features, not behavioral. The inter-cluster differential scoring handles this.
+- **Dead features**: Never activate: the L1 coefficient was too aggressive, or the feature wasn't needed. Usually < 5% is fine.
 - **Scale sensitivity**: Start with small scales (0.01-0.05) and increase gradually. MoE models are especially sensitive.
 - **Probe timing**: Rapid probing (< 1s between requests) can crash llama-server during collection. Use `--delay 1.0`.
 
@@ -601,7 +599,7 @@ datasets      # pip install datasets (for HuggingFace download only)
 
 ### The Eval Callback
 
-llama.cpp's `ggml_backend_sched` supports an eval callback — a function pointer called for every tensor node during graph computation. The callback has two phases:
+llama.cpp's `ggml_backend_sched` supports an eval callback: a function pointer called for every tensor node during graph computation. The callback has two phases:
 
 1. **Ask phase** (`ask=true`): Return `true` for tensors you want to observe. The scheduler will arrange a GPU→CPU copy.
 2. **Deliver phase** (`ask=false`): The tensor data is now in CPU memory. Read it.
@@ -612,7 +610,7 @@ Our callback intercepts `l_out-{layer}` tensors (the output of each transformer 
 
 - **No private headers**: The callback is installed via `common_params.cb_eval` (public API), not by reaching into llama internals. This makes the patch resilient to upstream refactors.
 - **Architecture-agnostic**: Any model that emits `l_out` or `final_output` tensors works automatically. Adding support for a new tensor name is a one-line change.
-- **Zero overhead when disabled**: The callback returns `false` for all tensors — no GPU-CPU copies occur.
+- **Zero overhead when disabled**: The callback returns `false` for all tensors: no GPU-CPU copies occur.
 - **Thread-safe**: All mutation of the capture struct is mutex-protected.
 
 ### SAE Architecture
@@ -627,7 +625,7 @@ SparseAutoencoder(
 
 Each column of the decoder matrix is a **feature direction** in activation space. When you extract a feature as a control vector, you're literally extracting that column (normalized).
 
-The encoder learns to detect when a feature is present; the decoder learns what direction in activation space each feature corresponds to. The L1 penalty on the encoder output forces sparsity — the model must explain each activation using as few features as possible.
+The encoder learns to detect when a feature is present; the decoder learns what direction in activation space each feature corresponds to. The L1 penalty on the encoder output forces sparsity: the model must explain each activation using as few features as possible.
 
 ### Control Vector Application
 
@@ -657,7 +655,7 @@ cb(cur, "l_out", il);
 
 The activation capture callback will automatically pick up the new `l_out` tensors. No other changes needed.
 
-> **Hybrid architectures** (Mamba+attention): The cvector-generator patch handles these via lazy initialization — it counts actual `l_out` tensors from the first forward pass rather than assuming `n_layers` tensors exist.
+> **Hybrid architectures** (Mamba+attention): The cvector-generator patch handles these via lazy initialization: it counts actual `l_out` tensors from the first forward pass rather than assuming `n_layers` tensors exist.
 
 ---
 
@@ -665,7 +663,7 @@ The activation capture callback will automatically pick up the new `l_out` tenso
 
 This work builds on:
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) by Georgi Gerganov and contributors
-- [Towards Monosemanticity](https://transformer-circuits.pub/2023/monosemantic-features/) by Anthropic (SAE methodology)
+- [Towards Monosemanticity](https://transformer-circuits.pub/2023/monosemantic-features/) by Anthropic
 - [Representation Engineering](https://arxiv.org/abs/2310.01405) by Zou et al. (control vector theory)
 
 ---
