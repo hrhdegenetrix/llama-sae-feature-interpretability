@@ -1,8 +1,8 @@
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index dc61afb..5f42766 100644
+index ad36c06..d7a6062 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -1186,6 +1186,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1260,6 +1260,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
      // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
      const auto gparams = graph_params(res, ubatch, mctx, gtype);
  
@@ -12,7 +12,7 @@ index dc61afb..5f42766 100644
      if (!graph_reuse_disable && res->can_reuse(gparams)) {
          //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
  
-@@ -1194,7 +1197,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1275,7 +1278,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
          res->reset();
  
          ggml_backend_sched_reset(sched.get());
@@ -21,10 +21,10 @@ index dc61afb..5f42766 100644
          //const auto t_start_us = ggml_time_us();
  
 diff --git a/tools/cvector-generator/cvector-generator.cpp b/tools/cvector-generator/cvector-generator.cpp
-index dcce0e9..dbb0290 100644
+index 8c6b3d8..723873f 100644
 --- a/tools/cvector-generator/cvector-generator.cpp
 +++ b/tools/cvector-generator/cvector-generator.cpp
-@@ -200,6 +200,14 @@ struct train_context {
+@@ -201,6 +201,14 @@ struct train_context {
      train_context(int n_embd_, int n_layers_) {
          n_embd = n_embd_;
          n_layers = n_layers_;
@@ -39,7 +39,7 @@ index dcce0e9..dbb0290 100644
          struct ggml_init_params params_ggml = {
              /*.mem_size   =*/ ggml_tensor_overhead() * (n_layers - 1) * 2u,
              /*.mem_buffer =*/ NULL,
-@@ -217,6 +225,7 @@ struct train_context {
+@@ -218,6 +226,7 @@ struct train_context {
  
      // add new rows into existing tensor in v_diff_tmp
      void concat_diff_tmp(const std::vector<struct ggml_tensor *> & diff_filtered) {
@@ -48,7 +48,7 @@ index dcce0e9..dbb0290 100644
          for (int il = 0; il < n_layers - 1; il++) {
              auto t = diff_filtered[il];
 diff --git a/tools/server/activation_capture.h b/tools/server/activation_capture.h
-new file mode 100755
+new file mode 100644
 index 0000000..96f2f19
 --- /dev/null
 +++ b/tools/server/activation_capture.h
@@ -263,17 +263,18 @@ index 0000000..96f2f19
 +    return true;
 +}
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 2e43beb..6827c7f 100644
+index b939e3b..4975dfe 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,4 @@
+-
 +#include "activation_capture.h"
  #include "server-context.h"
+ #include "server-chat.h"
  #include "server-common.h"
- #include "server-http.h"
-@@ -628,6 +629,10 @@ private:
- 
-         params_base = params;
+@@ -793,6 +793,10 @@ private:
+             }
+         }
  
 +        // Activation capture: install eval callback before context creation
 +        params_base.cb_eval = activation_eval_callback;
@@ -281,15 +282,15 @@ index 2e43beb..6827c7f 100644
 +
          llama_init = common_init_from_params(params_base);
  
-         model = llama_init->model();
-@@ -642,6 +647,14 @@ private:
+         model_tgt = llama_init->model();
+@@ -807,6 +811,14 @@ private:
  
-         n_ctx = llama_n_ctx(ctx);
+         n_ctx = llama_n_ctx(ctx_tgt);
  
 +        // Activation capture: init struct with model dimensions
 +        {
-+            int act_n_layers = llama_model_n_layer(model);
-+            int act_n_embd   = llama_model_n_embd(model);
++            int act_n_layers = llama_model_n_layer(model_tgt);
++            int act_n_embd   = llama_model_n_embd(model_tgt);
 +            g_activation_capture.init(act_n_layers, act_n_embd);
 +            SRV_INF("activation capture: initialized (%d layers, %d embd)%s\n", act_n_layers, act_n_embd, "");
 +        }
@@ -297,7 +298,7 @@ index 2e43beb..6827c7f 100644
          add_bos_token = llama_vocab_get_add_bos(vocab);
  
          if (params_base.speculative.has_dft()) {
-@@ -3996,6 +4009,170 @@ void server_routes::init_routes() {
+@@ -4410,6 +4422,170 @@ void server_routes::init_routes() {
          res->ok(result->to_json());
          return res;
      };
@@ -467,9 +468,9 @@ index 2e43beb..6827c7f 100644
 +    };
  }
  
- std::unique_ptr<server_res_generator> server_routes::handle_slots_save(const server_http_req & req, int id_slot) {
+ json server_routes::get_model_info() const {
 diff --git a/tools/server/server-context.h b/tools/server/server-context.h
-index 75f3d2d..656c852 100644
+index 6585343..5c27de1 100644
 --- a/tools/server/server-context.h
 +++ b/tools/server/server-context.h
 @@ -1,6 +1,7 @@
@@ -480,28 +481,28 @@ index 75f3d2d..656c852 100644
  #include "server-task.h"
  #include "server-queue.h"
  
-@@ -115,6 +116,9 @@ struct server_routes {
+@@ -123,6 +124,9 @@ struct server_routes {
      server_http_context::handler_t post_rerank;
      server_http_context::handler_t get_lora_adapters;
      server_http_context::handler_t post_lora_adapters;
 +    server_http_context::handler_t get_activations;
 +    server_http_context::handler_t post_activations;
 +    server_http_context::handler_t post_activations_collect;
- private:
-     std::unique_ptr<server_res_generator> handle_completions_impl(
-             const server_http_req & req,
+ 
+     // to be used in router mode
+     json get_model_info() const;
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 0bd6fda..bbde6e5 100644
+index 4d56d45..851a559 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
-@@ -199,6 +199,10 @@ int main(int argc, char ** argv) {
+@@ -205,6 +205,10 @@ int llama_server(int argc, char ** argv) {
      // LoRA adapters hotswap
-     ctx_http.get ("/lora-adapters",       ex_wrapper(routes.get_lora_adapters));
-     ctx_http.post("/lora-adapters",       ex_wrapper(routes.post_lora_adapters));
+     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));
+     ctx_http.post("/lora-adapters",            ex_wrapper(routes.post_lora_adapters));
 +    // Activation capture (feature transparency + SAE collection)
-+    ctx_http.get ("/activations",          ex_wrapper(routes.get_activations));
-+    ctx_http.post("/activations",          ex_wrapper(routes.post_activations));
-+    ctx_http.post("/activations/collect",   ex_wrapper(routes.post_activations_collect));
++    ctx_http.get ("/activations",              ex_wrapper(routes.get_activations));
++    ctx_http.post("/activations",              ex_wrapper(routes.post_activations));
++    ctx_http.post("/activations/collect",      ex_wrapper(routes.post_activations_collect));
      // Save & load slots
-     ctx_http.get ("/slots",               ex_wrapper(routes.get_slots));
-     ctx_http.post("/slots/:id_slot",      ex_wrapper(routes.post_slots));
+     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
