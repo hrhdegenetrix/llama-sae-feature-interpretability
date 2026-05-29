@@ -659,6 +659,25 @@ The activation capture callback will automatically pick up the new `l_out` tenso
 
 ---
 
+## Citation
+
+If you use this pipeline in your research or project, please cite it:
+
+```bibtex
+@software{sullivan2026sae,
+  author       = {Sullivan, Magdalene},
+  title        = {llama-sae-feature-interpretability},
+  year         = {2026},
+  url          = {https://github.com/hrhdegenetrix/llama-sae-feature-interpretability},
+  affiliation  = {HeraldAI},
+  license      = {MIT}
+}
+```
+
+GitHub also surfaces a one-click APA / BibTeX export via the **"Cite this repository"** button in the sidebar (powered by `CITATION.cff`).
+
+---
+
 ## Acknowledgments
 
 This work builds on:
