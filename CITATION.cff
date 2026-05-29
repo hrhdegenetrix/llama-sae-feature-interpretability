@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+title: "llama-sae-feature-interpretability"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Sullivan
+    given-names: Magdalene
+    email: hello@heraldai.org
+    affiliation: HeraldAI
+repository-code: https://github.com/hrhdegenetrix/llama-sae-feature-interpretability
+license: MIT
+date-released: "2026-05-21"
+abstract: >
+  A complete SAE training and behavioral feature-steering pipeline for
+  llama.cpp — activation capture, sparse autoencoder training, behavioral
+  feature discovery, and control vector steering.
